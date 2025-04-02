@@ -14,7 +14,6 @@ A simple command-line todo application built with Go and Cobra.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/R2-D2.git
 cd R2-D2
 
 # Build the application
