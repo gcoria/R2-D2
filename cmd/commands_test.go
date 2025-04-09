@@ -323,3 +323,247 @@ func TestDeleteCommand(t *testing.T) {
 		t.Errorf("Expected 0 tasks after deletion, got %d", len(updatedTasks))
 	}
 }
+
+func TestAddSecretTask(t *testing.T) {
+	// Setup a temporary file for testing
+	tmpfile, err := os.CreateTemp("", "tasks_test.csv")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	// Override the tasks file with our temp file for this test
+	if err := os.Rename("tasks.csv", "tasks.csv.bak"); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("Failed to rename original tasks file: %v", err)
+	}
+	defer func() {
+		os.Remove("tasks.csv")
+		if _, err := os.Stat("tasks.csv.bak"); err == nil {
+			os.Rename("tasks.csv.bak", "tasks.csv")
+		}
+	}()
+
+	// Copy our temp file to the tasks.csv location
+	data, _ := os.ReadFile(tmpfile.Name())
+	if err := os.WriteFile("tasks.csv", data, 0644); err != nil {
+		t.Fatalf("Failed to create test tasks file: %v", err)
+	}
+
+	// Setup test cases
+	testCases := []struct {
+		name          string
+		args          []string
+		secret        bool
+		wantEncrypted bool
+	}{
+		{
+			name:          "Add regular task",
+			args:          []string{"Test regular task"},
+			secret:        false,
+			wantEncrypted: false,
+		},
+		{
+			name:          "Add secret task",
+			args:          []string{"Test secret task"},
+			secret:        true,
+			wantEncrypted: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset secretFlag for each test
+			secretFlag = tc.secret
+
+			// Execute the add command
+			oldArgs := os.Args
+			os.Args = append([]string{"r2d2", "add"}, tc.args...)
+			defer func() { os.Args = oldArgs }()
+
+			// Capture stdout to verify output
+			rescueStdout := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			// Run the command
+			addCmd.Run(addCmd, tc.args)
+
+			// Restore stdout
+			w.Close()
+			out, _ := io.ReadAll(r)
+			os.Stdout = rescueStdout
+
+			// Verify tasks were saved correctly
+			tasks, err := todo.LoadTasks("tasks.csv")
+			if err != nil {
+				t.Fatalf("Failed to load tasks: %v", err)
+			}
+
+			// Verify at least one task exists
+			if len(tasks) == 0 {
+				t.Fatalf("No tasks were saved")
+			}
+
+			// Get the last task (should be the one we just added)
+			lastTask := tasks[len(tasks)-1]
+
+			// Check if the task is encrypted as expected
+			if lastTask.Encrypted != tc.wantEncrypted {
+				t.Errorf("Task encryption status = %v, want %v", lastTask.Encrypted, tc.wantEncrypted)
+			}
+
+			// If it's a secret task, verify it's properly encrypted
+			if tc.wantEncrypted {
+				// The description should be encrypted (not plain text)
+				if lastTask.Description == tc.args[0] {
+					t.Errorf("Secret task not encrypted, got raw text: %v", lastTask.Description)
+				}
+
+				// But should decrypt back to the original
+				decrypted, err := todo.DecryptText(lastTask.Description)
+				if err != nil {
+					t.Errorf("Failed to decrypt task: %v", err)
+				}
+				if decrypted != tc.args[0] {
+					t.Errorf("Decrypted text = %v, want %v", decrypted, tc.args[0])
+				}
+			} else {
+				// Regular task should have plain text description
+				if lastTask.Description != tc.args[0] {
+					t.Errorf("Regular task description = %v, want %v", lastTask.Description, tc.args[0])
+				}
+			}
+
+			// Verify the correct output message was printed
+			output := string(out)
+			if tc.wantEncrypted {
+				if !strings.Contains(output, "Secret task added") {
+					t.Errorf("Output doesn't contain 'Secret task added', got: %v", output)
+				}
+			} else {
+				if !strings.Contains(output, "Task added") {
+					t.Errorf("Output doesn't contain 'Task added', got: %v", output)
+				}
+			}
+		})
+	}
+}
+
+func TestListWithSecrets(t *testing.T) {
+	// Setup a temporary file for testing
+	tmpfile, err := os.CreateTemp("", "tasks_test.csv")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	// Override the tasks file with our temp file for this test
+	if err := os.Rename("tasks.csv", "tasks.csv.bak"); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("Failed to rename original tasks file: %v", err)
+	}
+	defer func() {
+		os.Remove("tasks.csv")
+		if _, err := os.Stat("tasks.csv.bak"); err == nil {
+			os.Rename("tasks.csv.bak", "tasks.csv")
+		}
+	}()
+
+	// Create test data with both regular and encrypted tasks
+	plainText := "Regular task"
+	secretText := "This is a secret task"
+
+	encryptedText, err := todo.EncryptText(secretText)
+	if err != nil {
+		t.Fatalf("Failed to encrypt text: %v", err)
+	}
+
+	tasks := []todo.Task{
+		{
+			ID:          1,
+			Description: plainText,
+			Completed:   false,
+			CreatedAt:   time.Now(),
+			CompletedAt: time.Time{},
+			Encrypted:   false,
+		},
+		{
+			ID:          2,
+			Description: encryptedText,
+			Completed:   false,
+			CreatedAt:   time.Now(),
+			CompletedAt: time.Time{},
+			Encrypted:   true,
+		},
+	}
+
+	// Save the test tasks
+	if err := todo.SaveTasks("tasks.csv", tasks); err != nil {
+		t.Fatalf("Failed to save test tasks: %v", err)
+	}
+
+	testCases := []struct {
+		name              string
+		showSecrets       bool
+		wantPlainVisible  bool
+		wantSecretVisible bool
+	}{
+		{
+			name:              "List without showing secrets",
+			showSecrets:       false,
+			wantPlainVisible:  true,
+			wantSecretVisible: false,
+		},
+		{
+			name:              "List with showing secrets",
+			showSecrets:       true,
+			wantPlainVisible:  true,
+			wantSecretVisible: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set the showSecrets flag
+			showSecretsFlag = tc.showSecrets
+
+			// Capture stdout to verify output
+			rescueStdout := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			// Run the list command
+			listCmd.Run(listCmd, []string{})
+
+			// Restore stdout and get output
+			w.Close()
+			out, _ := io.ReadAll(r)
+			os.Stdout = rescueStdout
+
+			output := string(out)
+
+			// Verify regular task is visible
+			if tc.wantPlainVisible && !strings.Contains(output, plainText) {
+				t.Errorf("Regular task not visible in output: %v", output)
+			}
+
+			// Verify secret task handling
+			if tc.wantSecretVisible {
+				// When showing secrets, the decrypted text should be visible
+				if !strings.Contains(output, secretText) {
+					t.Errorf("Decrypted secret task not visible with --show-secrets: %v", output)
+				}
+			} else {
+				// When not showing secrets, should show [ENCRYPTED] instead
+				if !strings.Contains(output, "[ENCRYPTED]") {
+					t.Errorf("Encrypted task should show [ENCRYPTED] when not decrypted: %v", output)
+				}
+				// And the actual secret text should not be visible
+				if strings.Contains(output, secretText) {
+					t.Errorf("Secret text should not be visible without --show-secrets flag: %v", output)
+				}
+			}
+		})
+	}
+}
