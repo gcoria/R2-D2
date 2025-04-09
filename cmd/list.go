@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var showSecretsFlag bool
+
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all tasks",
@@ -26,7 +28,7 @@ var listCmd = &cobra.Command{
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.Debug)
 
-		fmt.Fprintln(w, "ID\tSTATUS\tDESCRIPTION\tCREATED AT")
+		fmt.Fprintln(w, "ID\tSTATUS\tDESCRIPTION\tCREATED AT\tSECRET")
 
 		for _, task := range tasks {
 			status := "Pending"
@@ -36,11 +38,30 @@ var listCmd = &cobra.Command{
 
 			createdTime := task.CreatedAt.Format("2006-01-02 15:04:05")
 
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
+			description := task.Description
+			secretStatus := "No"
+
+			if task.Encrypted {
+				secretStatus = "Yes"
+				if showSecretsFlag {
+					// Decrypt the task description
+					decrypted, err := todo.DecryptText(task.Description)
+					if err != nil {
+						description = "[DECRYPT ERROR]"
+					} else {
+						description = decrypted
+					}
+				} else {
+					description = "[ENCRYPTED]"
+				}
+			}
+
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
 				task.ID,
 				status,
-				task.Description,
+				description,
 				createdTime,
+				secretStatus,
 			)
 		}
 
@@ -50,4 +71,5 @@ var listCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(listCmd)
+	listCmd.Flags().BoolVarP(&showSecretsFlag, "show-secrets", "d", false, "Decrypt and display secret tasks")
 }
